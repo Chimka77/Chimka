@@ -1,0 +1,28 @@
+/* One-time: derive + deploy the treasury wallet.
+   1. cp .env.example .env  and fill in TREASURY_MNEMONIC
+   2. node scripts/deploy-treasury.js          -> prints the address
+   3. send 1+ TON to that address
+   4. set TREASURY_ADDRESS in .env to that same address
+   5. run again with --deploy to deploy the contract                        */
+'use strict';
+require('dotenv').config();
+const TonWeb = require('tonweb');
+const tonMnemonic = require('tonweb-mnemonic');
+
+(async () => {
+  const words = (process.env.TREASURY_MNEMONIC || '').trim().split(/\s+/);
+  if (words.length !== 24) { console.error('Set TREASURY_MNEMONIC (24 words) in .env'); process.exit(1); }
+  const seed = await tonMnemonic.mnemonicToSeed(words);
+  const keyPair = TonWeb.utils.nacl.sign.keyPair.fromSeed(seed);
+  const tonweb = new TonWeb();
+  const w = tonweb.wallet.all.v4R2.create({ publicKey: keyPair.publicKey, wc: 0 });
+  const addr = (await w.getAddress()).toString(true, true, false);
+  console.log('Treasury address:', addr);
+  if (process.argv.includes('--deploy')) {
+    console.log('Deploying...');
+    await w.createDeploy(keyPair.secretKey).send();
+    console.log('Deploy transaction sent.');
+  } else {
+    console.log('(fund this address, then re-run with --deploy)');
+  }
+})();
