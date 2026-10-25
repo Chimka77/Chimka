@@ -1,14 +1,20 @@
 {
-  "name": "beach-buggy-backend",
+  "name": "buggy-rush-backend",
   "version": "1.0.0",
-  "description": "Backend for Telegram 3D Beach Buggy Combat Racing",
+  "private": true,
+  "description": "Backend for Buggy Rush: G$ ledger, TON deposits/withdrawals, room fees, prize settlement, shop",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "deploy-treasury": "node scripts/deploy-treasury.js"
   },
+  "engines": { "node": ">=18" },
   "dependencies": {
-    "express": "^4.19.2",
-    "socket.io": "^4.7.5",
-    "cors": "^2.8.5"
+    "better-sqlite3": "^11.10.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "tonweb": "^0.0.66",
+    "tonweb-mnemonic": "^1.0.1"
   }
 }
