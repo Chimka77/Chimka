@@ -1,0 +1,17 @@
+name: Deploy to Firebase Hosting
+on:
+  push:
+    branches:
+      - main  # Change to "master" if your GitHub branch is named master
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci && npm run build  # This compiles your website files
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: "${{ secrets.GITHUB_TOKEN }}"
+          firebaseServiceAccount: "${{ secrets.FIREBASE_SERVICE_ACCOUNT }}"
+          projectId: street-race-ac938
+          channelId: live
