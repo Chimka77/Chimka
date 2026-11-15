@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Admin</title>
+<style>
+body{margin:0 auto;padding:16px;max-width:560px;font:15px system-ui,sans-serif;background:#0b0d14;color:#eef0f6}
+input,button{font:inherit;width:100%;box-sizing:border-box;padding:12px;margin:5px 0;border-radius:12px;border:1px solid #ffffff2a;background:#ffffff12;color:#fff}
+button{background:linear-gradient(90deg,#8b5cf6,#ec4899);border:0;font-weight:800;cursor:pointer}
+.card{background:#ffffff0a;border:1px solid #ffffff22;border-radius:16px;padding:14px;margin:12px 0}
+.big{font-size:30px;font-weight:800;margin:6px 0}
+.row{border-top:1px solid #ffffff1a;padding:10px 0;word-break:break-all;font-size:13px}
+.row button{width:48%;display:inline-block;margin:6px 1% 0 0;padding:8px}
+#msg{color:#ffd37a;min-height:20px}
+</style></head><body>
+<h2>Admin</h2>
+<input id="api" placeholder="Server address, e.g. https://your-api.onrender.com">
+<input id="tok" type="password" placeholder="Admin token (password)" autocomplete="off">
+<button id="go">Load</button>
+<div id="msg"></div>
+<div class="card"><b>House balance (your 10%)</b><div class="big" id="bal">-</div>
+<input id="amt" type="number" step="any" placeholder="Amount to cash out (G$)">
+<button id="wd">Cash out to my saved wallet</button></div>
+<div class="card"><b>Pending withdrawals</b><div id="wl"></div></div>
+<div class="card"><b>Running rooms (cancel refunds everyone)</b><div id="rl"></div></div>
+<script>
+const $ = id => document.getElementById(id), msg = t => $('msg').textContent = t;
+async function call(m, p, b) {
+  const base = $('api').value.trim().replace(/\/$/, '');
+  const h = { 'x-admin-token': $('tok').value };
+  if (m === 'POST') h['Content-Type'] = 'application/json';
+  const r = await fetch(base + p, { method: m, headers: h, body: m === 'POST' ? JSON.stringify(b || {}) : undefined });
+  let j = {}; try { j = await r.json() } catch (e) {}
+  if (!r.ok) throw new Error(j.error || 'Error ' + r.status);
+  return j;
+}
+function row(parent, text, btns) {
+  const d = document.createElement('div'); d.className = 'row';
+  const s = document.createElement('div'); s.textContent = text; d.append(s);
+  btns.forEach(([l, f]) => { const b = document.createElement('button'); b.textContent = l; b.onclick = f; d.append(b) });
+  parent.append(d);
+}
+async function act(m, p, b, ok) { try { await call(m, p, b); await load(); msg(ok || 'Done.') } catch (e) { msg(e.message) } }
+async function load() {
+  try {
+    msg('Loading...');
+    const [h, w, r] = await Promise.all([call('GET', '/admin/house'), call('GET', '/admin/withdrawals?status=pending'), call('GET', '/admin/rooms?status=running')]);
+    $('bal').textContent = h.balance.toFixed(2) + ' G$';
+    $('wl').replaceChildren(); $('rl').replaceChildren();
+    if (!w.length) $('wl').textContent = 'None';
+    if (!r.length) $('rl').textContent = 'None';
+    w.forEach(x => row($('wl'), `#${x.id} | ${(x.amount / 100).toFixed(2)} G$ | ${x.asset} ${x.network} | ${x.address}`, [
+      ['I sent it - Approve', () => { const t = prompt('Approve ONLY after you sent the coins. Paste the transaction hash:'); if (t !== null) act('POST', `/admin/withdrawals/${x.id}/approve`, { txHash: t }, 'Approved.') }],
+      ['Reject + refund', () => confirm('Reject and refund this withdrawal?') && act('POST', `/admin/withdrawals/${x.id}/reject`, {}, 'Rejected and refunded.')]]));
+    r.forEach(x => row($('rl'), `Room ${x.id} | entry ${(x.fee / 100).toFixed(2)} G$ | started ${x.created_at}`, [
+      ['Cancel + refund all', () => confirm('Cancel this room and refund every player?') && act('POST', `/admin/rooms/${x.id}/cancel`, {}, 'Room cancelled.')]]));
+    msg('Loaded.');
+  } catch (e) { msg(e.message) }
+}
+$('go').onclick = load;
+$('wd').onclick = () => {
+  const a = +$('amt').value; if (!(a > 0)) return msg('Enter an amount.');
+  if (confirm(`Create a withdrawal of ${a} G$ to your saved wallet?`)) act('POST', '/admin/house/withdraw', { amount: a }, 'Request created. Send the coins, then approve it below.');
+};
+</script></body></html>
