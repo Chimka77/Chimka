@@ -15,7 +15,7 @@ for k in ("JWT_SECRET", "RID_PEPPER", "ADMIN_TOKEN"):
         raise SystemExit(f"Set {k} in .env")
 
 USD_PER_GS = float(E.get("USD_PER_GS", 1))
-MIN_W = round(float(E.get("MIN_WITHDRAW", 5)) * 100)
+MIN_W = round(float(E.get("MIN_WITHDRAW", 1)) * 100)
 MAX_DAY = round(float(E.get("MAX_WITHDRAW_PER_DAY", 500)) * 100)
 NEED_EMAIL = E.get("REQUIRE_EMAIL_FOR_WITHDRAW", "true") != "false"
 
@@ -170,7 +170,7 @@ def whoami(req: Request):
 @app.post("/deposit/create")
 def deposit(req: Request, body: dict):
     u = need(req); asset, network = body.get("asset"), body.get("network")
-    try: usd = min(max(float(body.get("amount") or 10), 1), 10000)
+    try: usd = min(max(float(body.get("amount") or 10), 0.10), 10000)
     except (TypeError, ValueError): usd = 10
     code = PAY_CODE.get(f"{asset}|{network}")
     if not code: raise HTTPException(400, "That coin or network is not supported.")
