@@ -8,6 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 load_dotenv()
+for _f in (os.listdir("/etc/secrets") if os.path.isdir("/etc/secrets") else []):   # Render "Secret Files"
+    load_dotenv(os.path.join("/etc/secrets", _f))
 E = os.environ
 PROD = E.get("NODE_ENV", "production") == "production"
 for k in ("JWT_SECRET", "RID_PEPPER", "ADMIN_TOKEN"):
