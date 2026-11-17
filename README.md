@@ -1,35 +1,33 @@
-# Views – backend
+# Views backend
 
-Files: `server.js` (API), `public/index.html` (the app), `package.json`, `.env.example`.
+One Node server that serves your page (`public/index.html`) and the API it calls.
 
-## Run it
-1. Install Node 18 or newer.
-2. In this folder run `npm install`.
-3. Copy `.env.example` to `.env` and fill in `REPLICATE_API_TOKEN` and `JWT_SECRET`.
-4. Run `npm start` and open http://localhost:3000.
-5. Sign up in the app, then press Generate.
+## What it does
+- **Accounts:** sign up with email + password, a 6-digit code is emailed (Resend), the account only works after the code is entered. Login, logout, sessions (httpOnly cookie), rate limits.
+- **AI generation:** `/api/generate` checks the plan limits, starts the job on Replicate, `/api/jobs/:id` reports progress and saves the finished file on your server. Failed jobs don't count against the user's limit.
+- **Card payments:** Stripe subscriptions for Plus and Pro, plan upgrades, cancel/resume, update card (Stripe's portal).
+- **Editing:** the CapCut-style editor lives in the page itself (runs in the user's browser), so the server doesn't need to do anything for it.
 
-## Test paid plans before Stripe exists
-Log in, open the browser console, and run:
-`fetch('/api/dev/plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan:'plus'})})`
-This route is switched off when `NODE_ENV=production`.
+## Run it locally
+1. Install Node 20 or newer.
+2. `npm install`
+3. `cp .env.example .env`, fill it in, then: `node --env-file=.env server.js`
+4. Open http://localhost:3000. With no email key set (and NODE_ENV not production) the OTP code prints in the terminal.
 
-## Stripe setup (payments)
-1. Create a Stripe account and stay in test mode.
-2. Product catalog: create a product with a monthly price of $10 (Plus) and another of $50 (Pro). Copy each price ID into `.env`.
-3. Developers > API keys: copy the secret and publishable keys into `.env`.
-4. Webhook: in production add an endpoint `https://YOUR-DOMAIN/api/stripe/webhook` with the events `customer.subscription.created`, `customer.subscription.updated` and `customer.subscription.deleted`, then copy its signing secret into `STRIPE_WEBHOOK_SECRET`. For local testing install the Stripe CLI and run `stripe listen --forward-to localhost:3000/api/stripe/webhook`, which prints a signing secret to use.
-5. Settings > Billing > Customer portal: turn it on and save, otherwise "Update or remove card" will fail.
-6. Test with card 4242 4242 4242 4242, any future expiry and any CVC.
-7. Only switch to live keys after you have tested upgrading, cancelling, resuming and a failed card.
+## Set up the services
+**Email (Resend):** create an account, verify your domain, create an API key, set `RESEND_API_KEY` and `MAIL_FROM`.
 
-The plan prices shown in the app ($10 and $50) must match the prices you create in Stripe.
+**AI (Replicate):** create a token, set `REPLICATE_API_TOKEN`. Pick a text-to-video model and set `MODEL_VIDEO=owner/name`. Open that model's API tab and check its input names: the server sends `prompt` and `aspect_ratio`; change them in `/api/generate` if your model differs. Set `MODEL_3D` the same way, or leave blank to disable 3D. Watch `GLOBAL_DAILY_CAP`, it protects your wallet.
 
-## Costs (read this)
-Each video costs you money, and the cost depends on the model. Check the price on the model page, then set `LIMITS` at the top of `server.js` so that a user on each plan can never cost more than they pay. The defaults are conservative on purpose.
+**Stripe (test mode first):**
+1. Create two monthly products, Plus $10 and Pro $50. Put their price IDs in `STRIPE_PRICE_PLUS` and `STRIPE_PRICE_PRO`.
+2. Set `STRIPE_SECRET_KEY` and `STRIPE_PUBLISHABLE_KEY`.
+3. Add a webhook to `https://yourdomain.com/api/stripe/webhook` for `customer.subscription.created`, `.updated` and `.deleted`. Put its signing secret in `STRIPE_WEBHOOK_SECRET`. **Without this, paying users stay on Free.**
+4. Turn on the Customer Portal in the Stripe dashboard (Settings > Billing > Customer portal).
+5. Test with card 4242 4242 4242 4242 before going live.
 
-## Going live
-- Use a host that keeps files on disk between restarts (the `data` folder holds the database and the videos), or point `DATA_DIR` at a persistent disk.
-- Serve over HTTPS and set `NODE_ENV=production`.
-- Keep `.env` private. Never put the Replicate token in `index.html`.
-- Next steps: connect Stripe so the server sets `users.plan`, replace the starter prompt blocklist with real moderation, and delete old videos on a schedule.
+## Deploy
+Use a host with a persistent disk (Render, Railway, Fly.io, a VPS). Set `DATA_DIR` to the disk path, `NODE_ENV=production`, `APP_URL` to your https address, and all the keys above. Start command: `npm start`.
+
+## Not included yet
+Forgot-password email, server-side watermarking/export, and moving generated videos to S3-style storage for big scale.
