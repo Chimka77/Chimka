@@ -194,17 +194,12 @@ footer a{color:var(--mute);margin-right:14px}
 
 </div>
 
-<div class="ov" id="ov"><form class="pay" id="payf" novalidate autocomplete="on">
+<div class="ov" id="ov"><form class="pay" id="payf" novalidate>
  <h3 id="ptitle">Upgrade</h3><div class="sub" style="text-align:left;margin:0" id="psum"></div>
- <div id="savedrow" style="display:none"><div class="sh" style="margin-top:14px"><span id="savedtxt"></span><button class="btn" type="button" id="usenew">Use a different card</button></div></div>
- <div id="fields">
-  <label for="cn">Card number</label><input class="fld" id="cn" inputmode="numeric" autocomplete="cc-number" placeholder="1234 5678 9012 3456" maxlength="23"><div class="err" id="e-cn"></div>
-  <div class="two"><div><label for="ex">Expiry</label><input class="fld" id="ex" inputmode="numeric" autocomplete="cc-exp" placeholder="MM/YY" maxlength="5"><div class="err" id="e-ex"></div></div>
-  <div><label for="cv2">CVC</label><input class="fld" id="cv2" inputmode="numeric" autocomplete="cc-csc" placeholder="123" maxlength="4"><div class="err" id="e-cv"></div></div></div>
-  <label class="chk"><input type="checkbox" id="savec" checked> Save this card</label>
- </div>
- <div class="tools" style="margin-top:16px"><button class="big" id="paybtn" style="flex:1">Pay</button><button class="btn" type="button" id="cancel">Cancel</button></div>
- <div class="secure">Renews monthly. Cancel any time in Settings.</div>
+ <div id="payel" style="margin-top:14px;min-height:120px"></div>
+ <div class="err" id="perr"></div>
+ <div class="tools" style="margin-top:14px"><button class="big" id="paybtn" style="flex:1" disabled>Pay</button><button class="btn" type="button" id="cancel">Cancel</button></div>
+ <div class="secure">Your card is handled securely by Stripe and saved for renewals. Cancel any time in Settings.</div>
 </form></div>
 <div class="ov" id="auth"><form class="pay" id="authf" novalidate>
  <h3 id="atitle">Log in</h3><div class="sub" style="text-align:left;margin:0">Log in to generate videos.</div>
@@ -410,14 +405,14 @@ function split(t){var p=t.split(/\n\s*\n/).map(function(s){return s.trim()}).fil
 /* ---------- server connection ---------- */
 var me=null,authMode="login";
 function api(path,body){return fetch(path,{method:body?"POST":"GET",headers:body?{"Content-Type":"application/json"}:{},body:body?JSON.stringify(body):undefined,credentials:"same-origin"}).then(function(r){return r.json().catch(function(){return{}}).then(function(j){if(!r.ok)throw new Error(j.error||"Something went wrong.");return j})})}
-function loadMe(){return api("/api/me").then(function(j){me=j;plan=j.plan;Object.keys(j.limits).forEach(function(k){var L=j.limits[k];PLANS[k].perDay=L.perDay;PLANS[k].feats[0]=L.perDay+" videos per day, "+L.perMonth+" per month"});renderUsage();showAcct()}).catch(function(){me=null;showAcct()})}
+function loadMe(){return api("/api/me").then(function(j){me=j;plan=j.plan;Object.keys(j.limits).forEach(function(k){var L=j.limits[k];PLANS[k].perDay=L.perDay;PLANS[k].feats[0]=L.perDay+" videos per day, "+L.perMonth+" per month"});renderUsage();showAcct();loadBilling()}).catch(function(){me=null;bill=null;showAcct();renderSettings()})}
 function showAcct(){$("#acct").textContent=me?"Log out":"Log in"}
 function authUI(){$("#atitle").textContent=authMode==="login"?"Log in":"Create your account";$("#asub").textContent=authMode==="login"?"Log in":"Sign up";$("#aswap").textContent=authMode==="login"?"Create an account":"I already have an account";$("#apw").autocomplete=authMode==="login"?"current-password":"new-password";$("#aerr").textContent=""}
 function openAuth(){authMode="login";authUI();$("#auth").classList.add("on");$("#aem").focus()}
 $("#aswap").onclick=function(e){e.preventDefault();authMode=authMode==="login"?"signup":"login";authUI()};
 $("#acancel").onclick=function(){$("#auth").classList.remove("on")};
 $("#authf").onsubmit=function(e){e.preventDefault();api("/api/"+authMode,{email:$("#aem").value.trim(),password:$("#apw").value}).then(function(){$("#auth").classList.remove("on");$("#authf").reset();return loadMe()}).then(function(){toast("You’re logged in.")}).catch(function(x){$("#aerr").textContent=x.message})};
-$("#acct").onclick=function(){if(me){api("/api/logout",{}).catch(function(){}).then(function(){me=null;plan=sub.plan;showAcct();renderUsage();toast("Logged out.")})}else openAuth()};
+$("#acct").onclick=function(){if(me){api("/api/logout",{}).catch(function(){}).then(function(){me=null;bill=null;plan="free";showAcct();renderUsage();renderSettings();toast("Logged out.")})}else openAuth()};
 
 async function poll(id){for(var i=0;i<120;i++){var j=await api("/api/jobs/"+id);if(j.status==="done")return j;if(j.status==="failed")throw new Error(j.error||"Generation failed.");await new Promise(function(r){setTimeout(r,3000)})}throw new Error("This is taking too long. Try again in a moment.")}
 $("#gen").onclick=async function(){if(busy)return;var text=$("#prompt").value.trim();
@@ -472,47 +467,43 @@ $("#aiq").onkeydown=function(e){if(e.key==="Enter")$("#ais").click()};
 $("#aib").onclick=function(){$("#ai").classList.add("on");if(!$("#aimsgs").children.length)say("Hi! Tell me how to change your video and I’ll do it. Say help to see what I can do.")};
 $("#aix").onclick=function(){$("#ai").classList.remove("on")};
 
-/* ---------- subscription, settings and checkout ---------- */
-var sub={plan:"free",renews:0,cancelled:false},card=null,useNew=false,askCancel=false,DAY=864e5;
-function loadSub(){try{sub=JSON.parse(localStorage.getItem("v_sub"))||sub;card=JSON.parse(localStorage.getItem("v_card"))}catch(e){}
- if(!PLANS[sub.plan])sub={plan:"free",renews:0,cancelled:false};
- if(sub.plan!=="free"){if(sub.cancelled){if(Date.now()>sub.renews)sub={plan:"free",renews:0,cancelled:false}}else while(sub.renews<Date.now())sub.renews+=30*DAY}
- plan=sub.plan}
-function saveSub(){plan=sub.plan;try{localStorage.setItem("v_sub",JSON.stringify(sub));if(card)localStorage.setItem("v_card",JSON.stringify(card));else localStorage.removeItem("v_card")}catch(e){}renderUsage();renderSettings()}
-function fd(t){return new Date(t).toLocaleDateString(undefined,{day:"numeric",month:"long",year:"numeric"})}
-function renderSettings(){var p=PLANS[sub.plan],h="",d=fd(sub.renews);
- if(sub.plan==="free")h+='<div class="sc"><strong>Free plan</strong><p class="sm">Nothing to pay. You won’t be charged.</p><button class="big" id="seeplans">See paid plans</button></div>';
- else{h+='<div class="sc"><strong>'+p.name+' plan · '+p.price+' per month</strong><p class="sm">'+(sub.cancelled?"Cancelled. You keep "+p.name+" until "+d+" and you won’t be charged again.":"Next payment: "+p.price+" on "+d+".")+'</p>';
-  if(sub.cancelled)h+='<button class="big" id="resume">Resume plan</button>';
-  else if(askCancel)h+='<p class="sm">Cancel your plan? You won’t be charged again.</p><button class="btn" id="yescancel">Yes, cancel plan</button> <button class="btn" id="keep">Keep plan</button>';
-  else h+='<button class="btn" id="cancelp">Cancel plan</button>';h+='</div>'}
- h+='<div class="sc"><strong>Payment method</strong><p class="sm">'+(card?esc(card.brand)+" •••• "+esc(card.last4)+" · expires "+esc(card.exp):"No card saved.")+'</p>'+(card?'<button class="btn" id="rmcard">Remove card</button>':"")+'</div>';
- $("#setbox").innerHTML=h;var B=function(id,f){var e=$("#"+id);if(e)e.onclick=f};
- B("seeplans",function(){tab("plans")});
- B("cancelp",function(){askCancel=true;renderSettings()});B("keep",function(){askCancel=false;renderSettings()});
- B("yescancel",function(){askCancel=false;sub.cancelled=true;saveSub();toast("Plan cancelled. You won’t be charged again.")});
- B("resume",function(){if(!card){openPay(sub.plan);return}sub.cancelled=false;saveSub();toast("Plan resumed.")});
- B("rmcard",function(){card=null;var m="Card removed.";if(sub.plan!=="free"&&!sub.cancelled){sub.cancelled=true;m="Card removed. Your plan ends on "+fd(sub.renews)+" with no more charges."}saveSub();toast(m)})}
+/* ---------- billing: plans, settings and card payment (Stripe) ---------- */
+var sub={plan:"free"},bill=null,askCancel=false,stripeObj=null,els=null;
+function loadSub(){}
+function fd(t){return t?new Date(t).toLocaleDateString(undefined,{day:"numeric",month:"long",year:"numeric"}):""}
+function loadBilling(){return me?api("/api/billing").then(function(j){bill=j;renderSettings()}).catch(function(){}):Promise.resolve()}
+function renderSettings(){var h="";
+ if(!me)h='<div class="sc"><strong>Not logged in</strong><p class="sm">Log in to see your plan and payment method.</p><button class="big" id="s-login">Log in</button></div>';
+ else{var p=PLANS[me.plan]||PLANS.free,b=bill||{};
+  if(me.plan==="free")h+='<div class="sc"><strong>Free plan</strong><p class="sm">Nothing to pay. You won’t be charged.</p><button class="big" id="s-plans">See paid plans</button></div>';
+  else{h+='<div class="sc"><strong>'+p.name+' plan · '+p.price+' per month</strong><p class="sm">'+(b.cancelling?"Cancelled. You keep "+p.name+" until "+fd(b.renews)+" and you won’t be charged again.":"Next payment: "+p.price+" on "+fd(b.renews)+".")+'</p>';
+   if(b.cancelling)h+='<button class="big" id="s-resume">Resume plan</button>';
+   else if(askCancel)h+='<p class="sm">Cancel your plan? You won’t be charged again.</p><button class="btn" id="s-yes">Yes, cancel plan</button> <button class="btn" id="s-keep">Keep plan</button>';
+   else h+='<button class="btn" id="s-cancel">Cancel plan</button>';h+='</div>'}
+  var br=b.card?b.card.brand.charAt(0).toUpperCase()+b.card.brand.slice(1):"";
+  h+='<div class="sc"><strong>Payment method</strong><p class="sm">'+(b.card?esc(br)+" •••• "+esc(b.card.last4):"No card saved.")+'</p>'+(me.plan!=="free"||b.card?'<button class="btn" id="s-card">Update or remove card</button>':"")+'</div>'}
+ $("#setbox").innerHTML=h;var B=function(id,f){var e=$("#"+id);if(e)e.onclick=f},done=function(m){askCancel=false;return loadMe().then(loadBilling).then(function(){if(m)toast(m)})},fail=function(e){toast(e.message,true)};
+ B("s-login",openAuth);B("s-plans",function(){tab("plans")});
+ B("s-cancel",function(){askCancel=true;renderSettings()});B("s-keep",function(){askCancel=false;renderSettings()});
+ B("s-yes",function(){api("/api/billing/cancel",{}).then(function(){return done("Plan cancelled. You won’t be charged again.")}).catch(fail)});
+ B("s-resume",function(){api("/api/billing/resume",{}).then(function(){return done("Plan resumed.")}).catch(fail)});
+ B("s-card",function(){api("/api/billing/portal",{}).then(function(j){location.href=j.url}).catch(fail)})}
 
-function brand(n){return/^4/.test(n)?"Visa":/^(5[1-5]|2[2-7])/.test(n)?"Mastercard":/^3[47]/.test(n)?"Amex":"Card"}
-function showFields(){var sv=card&&!useNew;$("#savedrow").style.display=sv?"block":"none";$("#fields").style.display=sv?"none":"block";if(card)$("#savedtxt").textContent=card.brand+" •••• "+card.last4;if(!sv)$("#cn").focus()}
-function openPay(k){if(me){toast("Online payments aren’t connected yet. Your plan is set by the server.",true);return}pending=k;useNew=!card;var q=PLANS[k];$("#ptitle").textContent="Upgrade to "+q.name;$("#psum").textContent=q.price+" per month, billed monthly";$("#paybtn").textContent="Pay "+q.price;$$(".err").forEach(function(e){e.textContent=""});showFields();$("#ov").classList.add("on")}
-function closePay(){$("#ov").classList.remove("on")}
-$("#usenew").onclick=function(){useNew=true;showFields()};
+function loadStripe(){return new Promise(function(res,rej){if(window.Stripe)return res();var s=document.createElement("script");s.src="https://js.stripe.com/v3/";s.onload=res;s.onerror=function(){rej(new Error("Couldn’t load the secure payment form. Check your connection."))};document.head.appendChild(s)})}
+function closePay(){$("#ov").classList.remove("on");$("#payel").innerHTML=""}
+async function openPay(k){if(!me){openAuth();return}pending=k;var q=PLANS[k];$("#ptitle").textContent="Upgrade to "+q.name;$("#psum").textContent=q.price+" per month, billed monthly";$("#paybtn").textContent="Pay "+q.price;$("#paybtn").disabled=true;$("#perr").textContent="";$("#payel").textContent="Loading…";$("#ov").classList.add("on");
+ try{var j=await api("/api/billing/subscribe",{plan:k});
+  if(j.updated){closePay();await loadMe();await loadBilling();toast("You’re now on the "+q.name+" plan.");return}
+  await loadStripe();stripeObj=Stripe(j.publishableKey);els=stripeObj.elements({clientSecret:j.clientSecret,appearance:{theme:"night"}});$("#payel").innerHTML="";els.create("payment").mount("#payel");$("#paybtn").disabled=false}
+ catch(e){$("#perr").textContent=e.message;$("#payel").innerHTML=""}}
 $("#cancel").onclick=closePay;$("#ov").onclick=function(e){if(e.target===this)closePay()};
 document.addEventListener("keydown",function(e){if(e.key==="Escape")closePay()});
-$("#cn").oninput=function(){this.value=this.value.replace(/\D/g,"").slice(0,19).replace(/(.{4})/g,"$1 ").trim()};
-$("#ex").oninput=function(){var v=this.value.replace(/\D/g,"").slice(0,4);this.value=v.length>2?v.slice(0,2)+"/"+v.slice(2):v};
-$("#cv2").oninput=function(){this.value=this.value.replace(/\D/g,"").slice(0,4)};
-function luhn(n){var s=0,d=false;for(var i=n.length-1;i>=0;i--){var x=+n[i];if(d){x*=2;if(x>9)x-=9}s+=x;d=!d}return n.length>=13&&s%10===0}
-$("#payf").onsubmit=function(ev){ev.preventDefault();var ok=true,fresh=!card||useNew,n=$("#cn").value.replace(/\s/g,""),E=function(id,m){$("#e-"+id).textContent=m;if(m)ok=false};
- if(fresh){E("cn",luhn(n)?"":"Check the card number.");var m=$("#ex").value.match(/^(\d\d)\/(\d\d)$/),d=new Date(),good=m&&+m[1]>=1&&+m[1]<=12&&(2000+ +m[2])*12+ +m[1]>=d.getFullYear()*12+d.getMonth()+1;
-  E("ex",good?"":"Use a future date, MM/YY.");E("cv",/^\d{3,4}$/.test($("#cv2").value)?"":"3 or 4 digits.");if(!ok)return}
- var b=$("#paybtn");b.disabled=true;b.textContent="Processing…";
- /* CONNECT PAYMENTS HERE: use Stripe Elements or Checkout so card numbers go straight to Stripe and never touch your own server. Charge on your server, and cancel renewals there too. */
- setTimeout(function(){if(fresh&&$("#savec").checked)card={brand:brand(n),last4:n.slice(-4),exp:$("#ex").value};
-  sub={plan:pending,renews:Date.now()+30*DAY,cancelled:!card};b.disabled=false;$("#payf").reset();closePay();saveSub();render();
-  toast(card?"You’re now on the "+PLANS[plan].name+" plan.":"You’re on "+PLANS[plan].name+" until "+fd(sub.renews)+". No card saved, so you won’t be charged again.")},1500)};
+$("#payf").onsubmit=async function(ev){ev.preventDefault();if(!stripeObj||!els)return;var b=$("#paybtn");b.disabled=true;b.textContent="Processing…";$("#perr").textContent="";
+ var r=await stripeObj.confirmPayment({elements:els,confirmParams:{return_url:location.origin+location.pathname},redirect:"if_required"});
+ if(r.error){$("#perr").textContent=r.error.message;b.disabled=false;b.textContent="Pay "+PLANS[pending].price;return}
+ closePay();toast("Payment received. Activating your plan…");
+ for(var i=0;i<15;i++){await new Promise(function(z){setTimeout(z,1500)});await loadMe();if(me&&me.plan===pending)break}
+ await loadBilling();toast(me&&me.plan===pending?"You’re now on the "+PLANS[pending].name+" plan.":"Your payment is processing. Your plan will update in a moment.")};
 
 loadSub();setMode("video");renderUsage();render();renderSettings();loadMe();
 })();
