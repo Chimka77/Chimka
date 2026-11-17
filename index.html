@@ -205,6 +205,7 @@ footer a{color:var(--mute);margin-right:14px}
  <h3 id="atitle">Log in</h3><div class="sub" style="text-align:left;margin:0">Log in to generate videos.</div>
  <label for="aem">Email</label><input class="fld" id="aem" type="email" autocomplete="email" placeholder="you@example.com">
  <label for="apw">Password</label><input class="fld" id="apw" type="password" autocomplete="current-password" placeholder="At least 8 characters">
+ <div id="otpbox" style="display:none"><label for="aotp">6-digit code from your email</label><input class="fld" id="aotp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456"><div class="secure" style="text-align:left"><a href="#" id="aresend" style="color:var(--c)">Resend code</a></div></div>
  <div class="err" id="aerr"></div>
  <div class="tools" style="margin-top:12px"><button class="big" id="asub" style="flex:1">Log in</button><button class="btn" type="button" id="acancel">Cancel</button></div>
  <div class="secure"><a href="#" id="aswap" style="color:var(--c)">Create an account</a></div>
@@ -404,14 +405,18 @@ $("#dl").onclick=function(){exportV(clips,"views-video")};
 function split(t){var p=t.split(/\n\s*\n/).map(function(s){return s.trim()}).filter(Boolean);if(p.length<2)p=(t.match(/[^.!?]+[.!?]*/g)||[]).map(function(s){return s.trim()}).filter(Boolean);return p.slice(0,24)}
 /* ---------- server connection ---------- */
 var me=null,authMode="login";
-function api(path,body){return fetch(path,{method:body?"POST":"GET",headers:body?{"Content-Type":"application/json"}:{},body:body?JSON.stringify(body):undefined,credentials:"same-origin"}).then(function(r){return r.json().catch(function(){return{}}).then(function(j){if(!r.ok)throw new Error(j.error||"Something went wrong.");return j})})}
+function api(path,body){return fetch(path,{method:body?"POST":"GET",headers:body?{"Content-Type":"application/json"}:{},body:body?JSON.stringify(body):undefined,credentials:"same-origin"}).then(function(r){return r.json().catch(function(){return{}}).then(function(j){if(!r.ok){var er=new Error(j.error||"Something went wrong.");er.data=j;throw er}return j})})}
 function loadMe(){return api("/api/me").then(function(j){me=j;plan=j.plan;Object.keys(j.limits).forEach(function(k){var L=j.limits[k];PLANS[k].perDay=L.perDay;PLANS[k].feats[0]=L.perDay+" videos per day, "+L.perMonth+" per month"});renderUsage();showAcct();loadBilling()}).catch(function(){me=null;bill=null;showAcct();renderSettings()})}
 function showAcct(){$("#acct").textContent=me?"Log out":"Log in"}
-function authUI(){$("#atitle").textContent=authMode==="login"?"Log in":"Create your account";$("#asub").textContent=authMode==="login"?"Log in":"Sign up";$("#aswap").textContent=authMode==="login"?"Create an account":"I already have an account";$("#apw").autocomplete=authMode==="login"?"current-password":"new-password";$("#aerr").textContent=""}
+var otpStep=false;
+function showOtp(){otpStep=true;$("#otpbox").style.display="block";$("#atitle").textContent="Check your email";$("#asub").textContent="Verify";$("#aerr").textContent="";$("#aotp").focus()}
+function authUI(){otpStep=false;$("#otpbox").style.display="none";$("#atitle").textContent=authMode==="login"?"Log in":"Create your account";$("#asub").textContent=authMode==="login"?"Log in":"Sign up";$("#aswap").textContent=authMode==="login"?"Create an account":"I already have an account";$("#apw").autocomplete=authMode==="login"?"current-password":"new-password";$("#aerr").textContent=""}
 function openAuth(){authMode="login";authUI();$("#auth").classList.add("on");$("#aem").focus()}
 $("#aswap").onclick=function(e){e.preventDefault();authMode=authMode==="login"?"signup":"login";authUI()};
 $("#acancel").onclick=function(){$("#auth").classList.remove("on")};
-$("#authf").onsubmit=function(e){e.preventDefault();api("/api/"+authMode,{email:$("#aem").value.trim(),password:$("#apw").value}).then(function(){$("#auth").classList.remove("on");$("#authf").reset();return loadMe()}).then(function(){toast("You’re logged in.")}).catch(function(x){$("#aerr").textContent=x.message})};
+$("#authf").onsubmit=function(e){e.preventDefault();var em=$("#aem").value.trim(),req=otpStep?api("/api/verify-otp",{email:em,code:$("#aotp").value.trim()}):api("/api/"+authMode,{email:em,password:$("#apw").value});
+ req.then(function(j){if(j&&j.needsOtp){showOtp();toast("We sent a 6-digit code to your email.");return}$("#auth").classList.remove("on");$("#authf").reset();return loadMe().then(function(){toast("You’re logged in.")})}).catch(function(x){if(x.data&&x.data.needsOtp){showOtp();toast(x.message,true);return}$("#aerr").textContent=x.message})};
+$("#aresend").onclick=function(e){e.preventDefault();api("/api/resend-otp",{email:$("#aem").value.trim()}).then(function(){toast("New code sent.")}).catch(function(x){$("#aerr").textContent=x.message})};
 $("#acct").onclick=function(){if(me){api("/api/logout",{}).catch(function(){}).then(function(){me=null;bill=null;plan="free";showAcct();renderUsage();renderSettings();toast("Logged out.")})}else openAuth()};
 
 async function poll(id){for(var i=0;i<120;i++){var j=await api("/api/jobs/"+id);if(j.status==="done")return j;if(j.status==="failed")throw new Error(j.error||"Generation failed.");await new Promise(function(r){setTimeout(r,3000)})}throw new Error("This is taking too long. Try again in a moment.")}
