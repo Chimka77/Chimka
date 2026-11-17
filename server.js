@@ -40,10 +40,44 @@ CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, user_id INTEGER, mode TEXT,
 CREATE INDEX IF NOT EXISTS jobs_user ON jobs(user_id, created);
 `);
 
+function addCol(t, c, d) {
+  const cols = db.prepare("PRAGMA table_info(" + t + ")").all().map((x) => x.name);
+  if (!cols.includes(c)) db.exec("ALTER TABLE " + t + " ADD COLUMN " + c + " " + d);
+}
+[["stripe_customer", "TEXT"], ["stripe_sub", "TEXT"], ["plan_status", "TEXT"], ["renews", "INTEGER"], ["cancel_at_end", "INTEGER DEFAULT 0"], ["card_brand", "TEXT"], ["card_last4", "TEXT"]].forEach((c) => addCol("users", c[0], c[1]));
+
 function usage(uid) {
   const count = (since) => db.prepare("SELECT COUNT(*) n FROM jobs WHERE user_id=? AND created>=? AND status!='failed'").get(uid, since).n;
   const d = new Date(); d.setUTCHours(0, 0, 0, 0);
   return { today: count(d.getTime()), month: count(now() - 30 * DAY) };
+}
+
+/* ---- Stripe billing. Card details go straight from the browser to Stripe and never touch this server. ---- */
+const stripe = process.env.STRIPE_SECRET_KEY ? require("stripe")(process.env.STRIPE_SECRET_KEY) : null;
+const WHSEC = process.env.STRIPE_WEBHOOK_SECRET;
+const PRICES = { plus: process.env.STRIPE_PRICE_PLUS, pro: process.env.STRIPE_PRICE_PRO };
+const APP_URL = process.env.APP_URL || "http://localhost:" + PORT;
+const planOfPrice = (id) => Object.keys(PRICES).find((k) => PRICES[k] && PRICES[k] === id) || null;
+const periodEnd = (sub) => {
+  const t = sub.current_period_end || (sub.items && sub.items.data[0] && sub.items.data[0].current_period_end);
+  return t ? t * 1000 : null;
+};
+/* The webhook is the only thing that changes a user's plan, so a user can't upgrade without paying. */
+async function syncSub(sub) {
+  const row = db.prepare("SELECT id, stripe_sub FROM users WHERE stripe_customer=?").get(String(sub.customer));
+  if (!row || (row.stripe_sub && row.stripe_sub !== sub.id)) return;
+  const item = sub.items && sub.items.data[0];
+  const plan = planOfPrice(item && item.price && item.price.id);
+  const live = ["active", "trialing", "past_due"].includes(sub.status) && plan;
+  let brand = null, last4 = null;
+  const pmId = typeof sub.default_payment_method === "string" ? sub.default_payment_method : sub.default_payment_method && sub.default_payment_method.id;
+  if (pmId) { try { const pm = await stripe.paymentMethods.retrieve(pmId); if (pm.card) { brand = pm.card.brand; last4 = pm.card.last4; } } catch (e) { console.error(e.message); } }
+  db.prepare("UPDATE users SET plan=?, stripe_sub=?, plan_status=?, renews=?, cancel_at_end=?, card_brand=COALESCE(?,card_brand), card_last4=COALESCE(?,card_last4) WHERE id=?")
+    .run(live ? plan : "free", sub.id, sub.status, periodEnd(sub), sub.cancel_at_period_end ? 1 : 0, brand, last4, row.id);
+}
+async function createSub(params) {
+  try { return await stripe.subscriptions.create({ ...params, expand: ["latest_invoice.confirmation_secret"] }); }
+  catch (e) { if (/expand/i.test(e.message)) return stripe.subscriptions.create({ ...params, expand: ["latest_invoice.payment_intent"] }); throw e; }
 }
 
 /* ---- AI provider (Replicate). To use another provider, change only these functions. ---- */
@@ -83,7 +117,7 @@ async function saveResult(url, id) {
 /* ---- app ---- */
 const app = express();
 app.set("trust proxy", 1);
-app.use(express.json({ limit: "20kb" }));
+app.use(express.json({ limit: "200kb", verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(cookieParser());
 app.use("/api/", rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeaders: true, legacyHeaders: false }));
 const authLimit = rateLimit({ windowMs: 60 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many attempts. Try again later." } });
@@ -180,6 +214,60 @@ app.get("/api/jobs/:id", auth, ah(async (req, res) => {
     return res.json({ status: "failed", error: "The AI couldn’t make that video. It wasn’t counted against your limit." });
   }
   res.json({ status: "processing" });
+}));
+
+/* ---- billing routes ---- */
+const needStripe = (req, res, next) => (stripe ? next() : bad(res, "Payments aren’t set up on the server yet.", 501));
+app.get("/api/billing", auth, (req, res) => {
+  const u = req.user;
+  res.json({ plan: u.plan, status: u.plan_status, renews: u.renews, cancelling: !!u.cancel_at_end, card: u.card_last4 ? { brand: u.card_brand, last4: u.card_last4 } : null });
+});
+app.post("/api/billing/subscribe", auth, needStripe, ah(async (req, res) => {
+  const plan = req.body.plan, price = PRICES[plan];
+  if (!price) return bad(res, "Unknown plan.");
+  const u = req.user;
+  if (!u.stripe_customer) {
+    const c = await stripe.customers.create({ email: u.email, metadata: { user_id: String(u.id) } });
+    db.prepare("UPDATE users SET stripe_customer=? WHERE id=?").run(c.id, u.id); u.stripe_customer = c.id;
+  }
+  if (u.stripe_sub && ["active", "trialing", "past_due"].includes(u.plan_status)) {
+    const cur = await stripe.subscriptions.retrieve(u.stripe_sub);
+    const item = cur.items.data[0];
+    if (planOfPrice(item.price.id) === plan && !cur.cancel_at_period_end) return bad(res, "You’re already on that plan.", 409);
+    const upd = await stripe.subscriptions.update(cur.id, { items: [{ id: item.id, price }], cancel_at_period_end: false, proration_behavior: "create_prorations" });
+    await syncSub(upd);
+    return res.json({ updated: true });
+  }
+  if (u.stripe_sub && u.plan_status === "incomplete") { try { await stripe.subscriptions.cancel(u.stripe_sub); } catch (e) { /* already gone */ } }
+  const sub = await createSub({ customer: u.stripe_customer, items: [{ price }], payment_behavior: "default_incomplete", payment_settings: { save_default_payment_method: "on_subscription" } });
+  db.prepare("UPDATE users SET stripe_sub=?, plan_status=? WHERE id=?").run(sub.id, sub.status, u.id);
+  const inv = sub.latest_invoice;
+  const secret = inv && ((inv.confirmation_secret && inv.confirmation_secret.client_secret) || (inv.payment_intent && inv.payment_intent.client_secret));
+  if (!secret) return bad(res, "Couldn’t start the payment. Try again.", 502);
+  res.json({ clientSecret: secret, publishableKey: process.env.STRIPE_PUBLISHABLE_KEY });
+}));
+app.post("/api/billing/cancel", auth, needStripe, ah(async (req, res) => {
+  if (!req.user.stripe_sub) return bad(res, "You don’t have a paid plan.");
+  await syncSub(await stripe.subscriptions.update(req.user.stripe_sub, { cancel_at_period_end: true }));
+  res.json({ ok: true });
+}));
+app.post("/api/billing/resume", auth, needStripe, ah(async (req, res) => {
+  if (!req.user.stripe_sub) return bad(res, "You don’t have a paid plan.");
+  await syncSub(await stripe.subscriptions.update(req.user.stripe_sub, { cancel_at_period_end: false }));
+  res.json({ ok: true });
+}));
+app.post("/api/billing/portal", auth, needStripe, ah(async (req, res) => {
+  if (!req.user.stripe_customer) return bad(res, "No billing account yet.");
+  const p = await stripe.billingPortal.sessions.create({ customer: req.user.stripe_customer, return_url: APP_URL });
+  res.json({ url: p.url });
+}));
+app.post("/api/stripe/webhook", ah(async (req, res) => {
+  if (!stripe || !WHSEC) return res.status(501).end();
+  let ev;
+  try { ev = stripe.webhooks.constructEvent(req.rawBody, req.headers["stripe-signature"], WHSEC); }
+  catch (e) { return res.status(400).send("Bad signature"); }
+  if (["customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"].includes(ev.type)) await syncSub(ev.data.object);
+  res.json({ received: true });
 }));
 
 /* Testing only: lets you switch your own plan until Stripe is connected. Disabled in production. */
